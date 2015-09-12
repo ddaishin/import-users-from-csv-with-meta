@@ -4,9 +4,12 @@ Plugin Name: Import users from CSV with meta
 Plugin URI: http://www.codection.com
 Description: This plugins allows to import users using CSV files to WP database automatically
 Author: codection
-Version: 1.5.1
+Version: 1.6.3
 Author URI: https://codection.com
 */
+
+include( "smtp.php" );
+include( "email-repeated.php" );
 
 $url_plugin = WP_PLUGIN_URL.'/'.str_replace(basename( __FILE__), "", plugin_basename(__FILE__));
 $wp_users_fields = array("user_nicename", "user_url", "display_name", "nickname", "first_name", "last_name", "description", "jabber", "aim", "yim", "user_registered", "password");
@@ -17,28 +20,48 @@ function acui_init(){
 }
 
 function acui_activate(){
+	global $acui_smtp_options;
+
 	$sitename = strtolower( $_SERVER['SERVER_NAME'] );
 	if ( substr( $sitename, 0, 4 ) == 'www.' ) {
 		$sitename = substr( $sitename, 4 );
 	}
 	
 	add_option( "acui_columns" );
-	add_option( "acui_mail_from", 'wordpress@' . $sitename, '', false );
-	add_option( "acui_mail_from_name", 'WordPress', '', false );
 	add_option( "acui_mail_subject", 'Welcome to ' . get_bloginfo("name"), '', false );
 	add_option( "acui_mail_body", 'Welcome,<br/>Your data to login in this site is:<br/><ul><li>URL to login: **loginurl**</li><li>Username = **username**</li><li>Password = **password**</li></ul>', '', false );
+
+	// smtp
+	foreach ( $acui_smtp_options as $name => $val ) {
+		add_option( $name, $val );
+	}
 }
 
 function acui_deactivate(){
 	delete_option( "acui_columns" );
-	delete_option( "acui_mail_from" );
-	delete_option( "acui_mail_from_name" );
 	delete_option( "acui_mail_subject" );
 	delete_option( "acui_mail_body" );
+
+	foreach ( $acui_smtp_options as $name => $val ) {
+		delete_option( $name );
+	}
 }
 
 function acui_menu() {
-	add_submenu_page( 'tools.php', 'Insert users massively (CSV)', 'Import users from CSV', 'manage_options', 'acui', 'acui_options' ); 
+	add_submenu_page( 'tools.php', 'Insert users massively (CSV)', 'Import users from CSV', 'manage_options', 'acui', 'acui_options' );
+	add_submenu_page( NULL, 'SMTP Configuration', 'SMTP Configuration', 'manage_options', 'acui-smtp', 'acui_smtp' );
+}
+
+function acui_plugin_row_meta( $links, $file ){
+	if ( strpos( $file, basename( __FILE__ ) ) !== false ) {
+		$new_links = array(
+					'<a href="https://www.paypal.me/codection" target="_blank">Donate</a>'
+				);
+		
+		$links = array_merge( $links, $new_links );
+	}
+	
+	return $links;
 }
 
 function acui_detect_delimiter($file){
@@ -85,15 +108,26 @@ function acui_import_users( $file, $form_data, $attach_id ){?>
 		<h2>Importing users</h2>	
 		<?php
 			set_time_limit(0);
+			add_filter( 'send_password_change_email', '__return_false');
+
 			global $wpdb;
+			global $wp_users_fields;
+			global $wp_min_fields;	
+
 			$headers = array();
 			$headers_filtered = array();
 			$role = $form_data["role"];
 			$empty_cell_action = $form_data["empty_cell_action"];
-			$activate_users_wp_members = $form_data["activate_users_wp_members"];
-			
-			global $wp_users_fields;
-			global $wp_min_fields;	
+
+			if( empty( $form_data["activate_users_wp_members"] ) )
+				$activate_users_wp_members = "no_activate";
+			else
+				$activate_users_wp_members = $form_data["activate_users_wp_members"];
+
+			if( empty( $form_data["allow_multiple_accounts"] ) )
+				$activate_users_wp_members = "not_allowed";
+			else
+				$activate_users_wp_members = $form_data["allow_multiple_accounts"];
 	
 			echo "<h3>Ready to registers</h3>";
 			echo "<p>First row represents the form of sheet</p>";
@@ -102,27 +136,27 @@ function acui_import_users( $file, $form_data, $attach_id ){?>
 
 			ini_set('auto_detect_line_endings',TRUE);
 
-			$delimiter = acui_detect_delimiter($file);
+			$delimiter = acui_detect_delimiter( $file );
 
-			$manager = new SplFileObject($file);
-			while ( $data = $manager->fgetcsv($delimiter) ):
+			$manager = new SplFileObject( $file );
+			while ( $data = $manager->fgetcsv( $delimiter ) ):
 				if( empty($data[0]) )
 					continue;
 
-				if( count($data) == 1 )
+				if( count( $data ) == 1 )
 					$data = $data[0];
 				
 				foreach ($data as $key => $value){
-					$data[$key] = trim($value);
+					$data[ $key ] = trim( $value );
 				}
 
 				for($i = 0; $i < count($data); $i++){
-					$data[$i] = acui_string_conversion($data[$i]);
+					$data[ $i ] = acui_string_conversion( $data[$i] );
 				}
 				
 				if($row == 0):
 					// check min columns username - email
-					if(count($data) < 2){
+					if(count( $data ) < 2){
 						echo "<div id='message' class='error'>File must contain at least 2 columns: username and email</div>";
 						break;
 					}
@@ -172,14 +206,20 @@ function acui_import_users( $file, $form_data, $attach_id ){?>
 					else
 						$password = $data[ $password_position ];
 
-					if( username_exists($username) ){ // if user exists, we take his ID by login
+					if( username_exists($username) ){ // if user exists, we take his ID by login, we will update his mail if it has changed
 						$user_object = get_user_by( "login", $username );
 						$user_id = $user_object->ID;
 
 						if( !empty($password) )
 							wp_set_password( $password, $user_id );
+
+						$updateEmailArgs = array(
+							'ID'         => $user_id,
+							'user_email' => $email
+						);
+						wp_update_user( $updateEmailArgs );
 					}
-					elseif( email_exists( $email ) ){ // if the email is registered, we take the user from this
+					elseif( email_exists( $email ) && $activate_users_wp_members == "not_allowed" ){ // if the email is registered, we take the user from this and we don't allow repeated emails
 	                    $user_object = get_user_by( "email", $email );
 	                    $user_id = $user_object->ID;
 	                    
@@ -189,20 +229,40 @@ function acui_import_users( $file, $form_data, $attach_id ){?>
 	                    if( !empty($password) )
 	                        wp_set_password( $password, $user_id );
 					}
+					elseif( email_exists( $email ) && $activate_users_wp_members == "allowed" ){ // if the email is registered and repeated emails are allowed
+	                    
+	                    if( empty($password) ) // if user not exist and password is empty but the column is set, it will be generated
+							$password = wp_generate_password();
+
+						$hacked_email = acui_hack_email( $email );
+						$user_id = wp_create_user( $username, $password, $hacked_email );
+						acui_hack_restore_remapped_email_address( $user_id, $email );
+					}
 					else{
 						if( empty($password) ) // if user not exist and password is empty but the column is set, it will be generated
 							$password = wp_generate_password();
 
-						$user_id = wp_create_user($username, $password, $email);
+						$user_id = wp_create_user( $username, $password, $email );
 					}
 						
-					if( is_wp_error($user_id) ){ // in case the user is generating errors after this checks
-						echo '<script>alert("Problems with user: ' . $username . ', we are going to skip");</script>';
+					if( is_wp_error( $user_id ) ){ // in case the user is generating errors after this checks
+						$error_string = $user_id->get_error_message();
+						echo '<script>alert("Problems with user: ' . $username . ', we are going to skip. \r\nError: ' . $error_string . '");</script>';
 						continue;
 					}
 
-					if(!( in_array("administrator", acui_get_roles($user_id), FALSE) || is_multisite() && is_super_admin( $user_id ) ))
-						wp_update_user(array ('ID' => $user_id, 'role' => $role)) ;
+					$user_object = new WP_User( $user_id );
+
+					if(!( in_array("administrator", acui_get_roles($user_id), FALSE) || is_multisite() && is_super_admin( $user_id ) )){
+						$default_roles = $user_object->roles;
+						foreach ( $default_roles as $default_role ) {
+							$user_object->remove_role( $default_role );
+						}
+						
+						foreach ($role as $single_role) {
+							$user_object->add_role( $single_role );
+						}						
+					}
 
 					// WP Members activation
 					if( $activate_users_wp_members == "activate" )
@@ -234,6 +294,7 @@ function acui_import_users( $file, $form_data, $attach_id ){?>
 										else
 											update_user_meta( $user_id, $headers[$i], $data[$i] );
 
+
 									}
 								}
 							}
@@ -254,17 +315,17 @@ function acui_import_users( $file, $form_data, $attach_id ){?>
 
 					// send mail
 					if( isset( $form_data["sends_email"] ) && $form_data["sends_email"] ):
-						update_option( "acui_mail_from_name", stripslashes( $form_data["from_name"] ) );
-						update_option( "acui_mail_from", stripslashes( $form_data["from_email"] ) );
 						update_option( "acui_mail_body", stripslashes( $form_data["body_mail"] ) );
 						update_option( "acui_mail_subject", stripslashes( $form_data["subject_mail"] ) );
 						
-						$body_mail = stripslashes($form_data["body_mail"] );
+						$body_mail = wpautop( $form_data["body_mail"] );
+						$body_mail = stripslashes( $body_mail );
 						$subject = stripslashes( $form_data["subject_mail"] );
 												
 						$body_mail = str_replace("**loginurl**", "<a href='" . home_url() . "/wp-login.php" . "'>" . home_url() . "/wp-login.php" . "</a>", $body_mail);
 						$body_mail = str_replace("**username**", $username, $body_mail);
 						$body_mail = str_replace("**password**", $password, $body_mail);
+						$body_mail = str_replace("**email**", $email, $body_mail);
 
 						foreach ( $wp_users_fields as $wp_users_field ) {								
 							if( $positions[ $wp_users_field ] != false && $wp_users_field != "password" ){
@@ -272,6 +333,7 @@ function acui_import_users( $file, $form_data, $attach_id ){?>
 							}
 						}
 
+						add_action( 'phpmailer_init', 'acui_mailer_init' );
 						add_filter( 'wp_mail_from', 'acui_mail_from' );
 						add_filter( 'wp_mail_from_name', 'acui_mail_from_name' );
 						add_filter( 'wp_mail_content_type', 'set_html_content_type' );
@@ -281,6 +343,7 @@ function acui_import_users( $file, $form_data, $attach_id ){?>
 						remove_filter( 'wp_mail_from', 'acui_mail_from' );
 						remove_filter( 'wp_mail_from_name', 'acui_mail_from_name' );
 						remove_filter( 'wp_mail_content_type', 'set_html_content_type' );
+						remove_action( 'phpmailer_init', 'acui_mailer_init' );
 
 					endif;
 
@@ -296,8 +359,8 @@ function acui_import_users( $file, $form_data, $attach_id ){?>
 			<br/>
 			<p>Process finished you can go <a href="<?php echo get_admin_url() . '/users.php'; ?>">here to see results</a></p>
 			<?php
-			//fclose($manager);
 			ini_set('auto_detect_line_endings',FALSE);
+			add_filter( 'send_password_change_email', '__return_true');
 		?>
 	</div>
 <?php
@@ -337,12 +400,6 @@ function acui_get_editable_roles() {
 }
 
 function acui_check_options(){
-	if( get_option( "acui_mail_from" ) == "" )
-		update_option( "acui_mail_from", 'wordpress@' . $sitename );
-
-	if( get_option( "acui_mail_from_name" ) == "" )
-		update_option( "acui_mail_from_name", 'WordPress' );
-
 	if( get_option( "acui_mail_body" ) == "" )
 		update_option( "acui_mail_body", 'Welcome,<br/>Your data to login in this site is:<br/><ul><li>URL to login: **loginurl**</li><li>Username = **username**</li><li>Password = **password**</li></ul>' );
 
@@ -450,17 +507,18 @@ function acui_options()
 				<tr class="form-field">
 					<th scope="row"><label for="role">Role</label></th>
 					<td>
-					<select name="role" id="role">
-						<?php 
-							$list_roles = acui_get_editable_roles(); 
-							foreach ($list_roles as $key => $value) {
-								if($key == "subscriber")
-									echo "<option selected='selected' value='$key'>$value</option>";
-								else
-									echo "<option value='$key'>$value</option>";
-							}
-						?>
-					</select>
+					<?php 
+						$list_roles = acui_get_editable_roles(); 
+						
+						foreach ($list_roles as $key => $value) {
+							if($key == "subscriber")
+								echo "<label style='margin-right:5px;'><input name='role[]' type='checkbox' checked='checked' value='$key'/>$value</label>";
+							else
+								echo "<label style='margin-right:5px;'><input name='role[]' type='checkbox' value='$key'/>$value</label>";
+						}
+					?>
+
+					<p class="description">If you choose more than one role, the roles would be assigned correctly but you should use some plugin like <a href="https://wordpress.org/plugins/user-role-editor/">User Role Editor</a> to manage them.</p>
 					</td>
 				</tr>
 				<tr class="form-field form-required">
@@ -471,30 +529,51 @@ function acui_options()
 					<th scope="row"><label>What should do the plugin with empty cells?</label></th>
 					<td>
 						<select name="empty_cell_action">
-							<option value="delete">Delete the metadata</option>
 							<option value="leave">Leave the old value for this metadata</option>
+							<option value="delete">Delete the metadata</option>							
 						</select>
 					</td>
 				</tr>
+
+				<?php if( is_plugin_active( 'wp-members/wp-members.php' ) ): ?>
+
 				<tr class="form-field form-required">
-					<th scope="row"><label><strong>(Only for <a href="https://wordpress.org/plugins/wp-members/">WP Members</a> users)</strong> Activate user at the same time is being created</label></th>
+					<th scope="row"><label>Activate user at the same time is being created</label></th>
 					<td>
 						<select name="activate_users_wp_members">
 							<option value="no_activate">Do not activate users</option>
 							<option value="activate">Activate users when they are being imported</option>
 						</select>
 					</td>
+					<p class="description"><strong>(Only for <a href="https://wordpress.org/plugins/wp-members/">WP Members</a> users)</strong>.</p>
 				</tr>
+
+				<?php endif; ?>
+
+				<?php if( is_plugin_active( 'allow-multiple-accounts/allow-multiple-accounts.php' ) ): ?>
+
+				<tr class="form-field form-required">
+					<th scope="row"><label>Repeated email in different users?</label></th>
+					<td>
+						<select name="allow_multiple_accounts">
+							<option value="not_allowed">Not allowed</option>
+							<option value="allowed">Allowed</option>
+						</select>
+						<p class="description"><strong>(Only for <a href="https://wordpress.org/plugins/allow-multiple-accounts/">Allow Multiple Accounts</a> users)</strong>. Allow multiple user accounts to be created having the same email address.</p>
+					</td>
+				</tr>
+
+				<?php endif; ?>
+
 				<tr class="form-field">
 					<th scope="row"><label for="user_login">Send mail</label></th>
 					<td>
 						<p>Do you wish to send a mail with credentials to new users? <input type="checkbox" name="sends_email" value = "yes" onclick="showMe('email_div')"></p>
 						<div id="email_div" style="display:none">
-						<p>From name: <input name="from_name" size="100" value="<?php echo $from_name; ?>" id="title" autocomplete="off" type="text"></p>
-						<p>From email : <input name="from_email" size="100" value="<?php echo $from_email; ?>" id="title" autocomplete="off" type="text"></p>
+						<p class="description">You can set your own SMTP and other mail details <a href="<?php echo admin_url( 'tools.php?page=acui-smtp' ); ?>" target="_blank">here</a>.
 						<p>Mail subject : <input name="subject_mail" size="100" value="<?php echo $subject_mail; ?>" id="title" autocomplete="off" type="text"></p>
 						<?php wp_editor( $body_mail , 'body_mail'); ?>
-						**username** = username to login - **password** = user password - **loginurl** = current site login url, for example www.site.com/wp-login.php<br/>
+						**username** = username to login - **password** = user password - **loginurl** = current site login url - **email** = user email<br/>
 						You can also use any WordPress user standard field, if you have used it in your CSV. For example, if you have a first_name column, you could use **first_name**
 						</div>
 					</td>
@@ -876,6 +955,7 @@ register_activation_hook(__FILE__,'acui_init');
 register_deactivation_hook( __FILE__, 'acui_deactivate' );
 add_action("plugins_loaded", "acui_init");
 add_action("admin_menu", "acui_menu");
+add_filter('plugin_row_meta', 'acui_plugin_row_meta', 10, 2);
 add_action('admin_init', 'acui_modify_user_edit_admin' );
 add_action("show_user_profile", "acui_extra_user_profile_fields");
 add_action("edit_user_profile", "acui_extra_user_profile_fields");
