@@ -252,8 +252,9 @@ function acui_import_users( $file, $form_data, $attach_id ){?>
 					}
 
 					$user_object = new WP_User( $user_id );
+					$can_modify_role = !( in_array("administrator", acui_get_roles($user_id), FALSE) || is_multisite() && is_super_admin( $user_id ) );
 
-					if(!( in_array("administrator", acui_get_roles($user_id), FALSE) || is_multisite() && is_super_admin( $user_id ) )){
+					if($can_modify_role){
 						$default_roles = $user_object->roles;
 						foreach ( $default_roles as $default_role ) {
 							$user_object->remove_role( $default_role );
@@ -273,6 +274,21 @@ function acui_import_users( $file, $form_data, $attach_id ){?>
 							if( !empty( $data ) ){
 								if(strtolower( $headers[$i] ) == "password"){ // passwords -> continue
 									continue;
+								}
+								else if (strtolower( $headers[$i] ) == "role" && !empty( $data[ $i ] )) { // role setting from csv
+
+									if($can_modify_role) {
+
+										$role_record = (array) explode( ' ', preg_replace( '/\s+/', ' ', $data[ $i ] ) );
+
+										foreach ( $role as $single_role ) {
+											$user_object->remove_role( $single_role );
+										}
+
+										foreach ( $role_record as $single_role_record ) {
+											$user_object->add_role( $single_role_record );
+										}
+									}
 								}
 								else{
 									if( in_array( $headers[$i], $wp_users_fields ) ){ // wp_user data
