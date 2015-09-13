@@ -259,10 +259,12 @@ function acui_import_users( $file, $form_data, $attach_id ){?>
 						foreach ( $default_roles as $default_role ) {
 							$user_object->remove_role( $default_role );
 						}
-						
-						foreach ($role as $single_role) {
-							$user_object->add_role( $single_role );
-						}						
+
+						if (is_array($role)) {
+							foreach ($role as $single_role) {
+								$user_object->add_role( $single_role );
+							}
+						}
 					}
 
 					// WP Members activation
@@ -281,8 +283,10 @@ function acui_import_users( $file, $form_data, $attach_id ){?>
 
 										$role_record = (array) explode( ' ', preg_replace( '/\s+/', ' ', $data[ $i ] ) );
 
-										foreach ( $role as $single_role ) {
-											$user_object->remove_role( $single_role );
+										if (is_array($role)) {
+											foreach ( $role as $single_role ) {
+												$user_object->remove_role( $single_role );
+											}
 										}
 
 										foreach ( $role_record as $single_role_record ) {
