@@ -112,7 +112,11 @@ function acui_import_users( $file, $form_data, $attach_id ){?>
 
 			global $wpdb;
 			global $wp_users_fields;
-			global $wp_min_fields;	
+			global $wp_min_fields;
+			global $wp_actions;
+
+			wp_defer_term_counting( true );
+			wp_defer_comment_counting( true );
 
 			$headers = array();
 			$headers_filtered = array();
@@ -142,6 +146,11 @@ function acui_import_users( $file, $form_data, $attach_id ){?>
 			while ( $data = $manager->fgetcsv( $delimiter ) ):
 				if( empty($data[0]) )
 					continue;
+
+				// free memory
+				$wpdb->queries = array();
+				$wp_actions    = array();
+				wp_cache_flush();
 
 				if( count( $data ) == 1 )
 					$data = $data[0];
