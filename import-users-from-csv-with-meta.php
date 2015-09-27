@@ -38,6 +38,8 @@ function acui_activate(){
 }
 
 function acui_deactivate(){
+	global $acui_smtp_options;
+
 	delete_option( "acui_columns" );
 	delete_option( "acui_mail_subject" );
 	delete_option( "acui_mail_body" );
