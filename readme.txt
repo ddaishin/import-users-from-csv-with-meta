@@ -4,7 +4,7 @@ Donate link: http://paypal.me/codection
 Tags: csv, import, importer, meta data, meta, user, users, user meta,  editor, profile, custom, fields, delimiter, update, insert
 Requires at least: 3.4
 Tested up to: 4.2.3
-Stable tag: 1.6.3
+Stable tag: 1.7.1
 License: GPLv2 or later
 License URI: http://www.gnu.org/licenses/gpl-2.0.html
 
@@ -51,6 +51,18 @@ Plugin will automatically detect:
 
 
 == Changelog ==
+
+= 1.7.1 =
+*	Bug solved. Thanks for reporting this bug: https://wordpress.org/support/topic/version-17-just-doesnt-work?replies=3#post-7538427
+
+= 1.7 =
+*	New GUI based on tabs easier to use
+*	Thanks to Michael Lancey ( Mckenzie Chase Management, Inc. ) we can now provide all this new features:	
+*	File can now be refered using a path and not only uploading.
+*	You can now create a scheduled event to import users regularl.
+
+= 1.6.4 =
+*	Bugs detected and solved thanks to a message from Periu Lane and others users, the problem was a var bad named.
 
 = 1.6.3 =
 *	Default action for empty values now is: leave old value, in this way we prevent unintentional deletions of meta data.

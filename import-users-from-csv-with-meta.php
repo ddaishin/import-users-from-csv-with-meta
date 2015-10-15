@@ -4,7 +4,7 @@ Plugin Name: Import users from CSV with meta
 Plugin URI: http://www.codection.com
 Description: This plugins allows to import users using CSV files to WP database automatically
 Author: codection
-Version: 1.6.3
+Version: 1.7.1
 Author URI: https://codection.com
 */
 
@@ -28,8 +28,15 @@ function acui_activate(){
 	}
 	
 	add_option( "acui_columns" );
+	
 	add_option( "acui_mail_subject", 'Welcome to ' . get_bloginfo("name"), '', false );
 	add_option( "acui_mail_body", 'Welcome,<br/>Your data to login in this site is:<br/><ul><li>URL to login: **loginurl**</li><li>Username = **username**</li><li>Password = **password**</li></ul>', '', false );
+	
+	add_option( "acui_cron_activated" );
+	add_option( "acui_cron_path_to_file" );
+	add_option( "acui_cron_period" );
+	add_option( "acui_cron_role" );
+	add_option( "acui_cron_log" );
 
 	// smtp
 	foreach ( $acui_smtp_options as $name => $val ) {
@@ -41,8 +48,17 @@ function acui_deactivate(){
 	global $acui_smtp_options;
 
 	delete_option( "acui_columns" );
+	
 	delete_option( "acui_mail_subject" );
 	delete_option( "acui_mail_body" );
+
+	delete_option( "acui_cron_activated" );
+	delete_option( "acui_cron_path_to_file" );
+	delete_option( "acui_cron_period" );
+	delete_option( "acui_cron_role" );
+	delete_option( "acui_cron_log" );
+
+	wp_clear_scheduled_hook( 'acui_cron' );
 
 	foreach ( $acui_smtp_options as $name => $val ) {
 		delete_option( $name );
@@ -105,7 +121,7 @@ function acui_string_conversion( $string ){
 		return $string;
 }
 
-function acui_import_users( $file, $form_data, $attach_id ){?>
+function acui_import_users( $file, $form_data, $attach_id = 0 ){?>
 	<div class="wrap">
 		<h2>Importing users</h2>	
 		<?php
@@ -131,9 +147,9 @@ function acui_import_users( $file, $form_data, $attach_id ){?>
 				$activate_users_wp_members = $form_data["activate_users_wp_members"];
 
 			if( empty( $form_data["allow_multiple_accounts"] ) )
-				$activate_users_wp_members = "not_allowed";
+				$allow_multiple_accounts = "not_allowed";
 			else
-				$activate_users_wp_members = $form_data["allow_multiple_accounts"];
+				$allow_multiple_accounts = $form_data["allow_multiple_accounts"];
 	
 			echo "<h3>Ready to registers</h3>";
 			echo "<p>First row represents the form of sheet</p>";
@@ -230,7 +246,7 @@ function acui_import_users( $file, $form_data, $attach_id ){?>
 						);
 						wp_update_user( $updateEmailArgs );
 					}
-					elseif( email_exists( $email ) && $activate_users_wp_members == "not_allowed" ){ // if the email is registered, we take the user from this and we don't allow repeated emails
+					elseif( email_exists( $email ) && $allow_multiple_accounts == "not_allowed" ){ // if the email is registered, we take the user from this and we don't allow repeated emails
 	                    $user_object = get_user_by( "email", $email );
 	                    $user_id = $user_object->ID;
 	                    
@@ -240,7 +256,7 @@ function acui_import_users( $file, $form_data, $attach_id ){?>
 	                    if( !empty($password) )
 	                        wp_set_password( $password, $user_id );
 					}
-					elseif( email_exists( $email ) && $activate_users_wp_members == "allowed" ){ // if the email is registered and repeated emails are allowed
+					elseif( email_exists( $email ) && $allow_multiple_accounts == "allowed" ){ // if the email is registered and repeated emails are allowed
 	                    
 	                    if( empty($password) ) // if user not exist and password is empty but the column is set, it will be generated
 							$password = wp_generate_password();
@@ -265,16 +281,19 @@ function acui_import_users( $file, $form_data, $attach_id ){?>
 					$user_object = new WP_User( $user_id );
 					$can_modify_role = !( in_array("administrator", acui_get_roles($user_id), FALSE) || is_multisite() && is_super_admin( $user_id ) );
 
-					if($can_modify_role){
+					if(!( in_array("administrator", acui_get_roles($user_id), FALSE) || is_multisite() && is_super_admin( $user_id ) )){
 						$default_roles = $user_object->roles;
 						foreach ( $default_roles as $default_role ) {
 							$user_object->remove_role( $default_role );
 						}
-
-						if (is_array($role)) {
+						
+						if( is_array( $role ) ){
 							foreach ($role as $single_role) {
 								$user_object->add_role( $single_role );
-							}
+							}	
+						}
+						else{
+							$user_object->add_role( $role );
 						}
 					}
 
@@ -383,7 +402,8 @@ function acui_import_users( $file, $form_data, $attach_id ){?>
 				$row++;						
 			endwhile;
 
-			wp_delete_attachment( $attach_id );
+			if( $attach_id != 0 )
+				wp_delete_attachment( $attach_id );
 
 			?>
 			</table>
@@ -438,20 +458,55 @@ function acui_check_options(){
 		update_option( "acui_mail_subject", 'Welcome to ' . get_bloginfo("name") );
 }
 
+function acui_admin_tabs( $current = 'homepage' ) {
+    $tabs = array( 'homepage' => 'Import users from CSV', 'columns' => 'Customs columns loaded', 'doc' => 'Documentation', 'cron' => 'Cron import', 'donate' => 'Donate' );
+    echo '<div id="icon-themes" class="icon32"><br></div>';
+    echo '<h2 class="nav-tab-wrapper">';
+    foreach( $tabs as $tab => $name ){
+        $class = ( $tab == $current ) ? ' nav-tab-active' : '';
+        echo "<a class='nav-tab$class' href='?page=acui&tab=$tab'>$name</a>";
+
+    }
+    echo '</h2>';
+}
+
 function acui_options() 
 {
 	global $url_plugin;
 
-	if (!current_user_can('create_users'))  
-	{
+	if ( !current_user_can('create_users') ) {
 		wp_die(__('You are not allowed to see this content.'));
-		$acui_action_url = admin_url('options-general.php?page=' . plugin_basename(__FILE__));
 	}
-	else if( isset( $_POST['uploadfile'] ) ){
-		acui_fileupload_process( $_POST );
-	}
+
+	if ( isset ( $_GET['tab'] ) ) 
+		$tab = $_GET['tab'];
+   	else 
+   		$tab = 'homepage';
+
+
+	if( isset( $_POST ) && !empty( $_POST ) ):
+		switch ( $tab ){
+      		case 'homepage':
+      			acui_fileupload_process( $_POST );
+
+      			return;
+      		break;
+
+      		case 'cron':
+      			acui_manage_cron_process( $_POST );
+      		break;
+
+      	}
+      	
+	endif;
+	
+	if ( isset ( $_GET['tab'] ) ) 
+		acui_admin_tabs( $_GET['tab'] ); 
 	else
-	{
+		acui_admin_tabs('homepage');
+	
+  	switch ( $tab ){
+      case 'homepage' :
 		
 	$args_old_csv = array( 'post_type'=> 'attachment', 'post_mime_type' => 'text/csv', 'post_status' => 'inherit', 'posts_per_page' => -1 );
 	$old_csv_files = new WP_Query( $args_old_csv );
@@ -464,34 +519,7 @@ function acui_options()
 	$subject_mail = get_option( "acui_mail_subject" );
 
 ?>
-	<script>	
-	jQuery(document).ready(function($) {
-		$('.postbox').children('h3, .handlediv').click(function(){ $(this).siblings('.inside').toggle();});
-	});
-	</script>
-
 	<div class="wrap">	
-
-		<div class="postbox">
-		    <div title="Click to open/close" class="handlediv">
-		      <br>
-		    </div>
-
-		    <h3 class="hndle"><span>&nbsp;Do you like it?</span></h3>
-
-		    <div class="inside" style="display: block;">
-		        <img src="<?php echo $url_plugin; ?>icon_coffee.png" alt="buy me a coffee" style=" margin: 5px; float:left;">
-		        <p>Hi! we are <a href="https://twitter.com/fjcarazo" target="_blank" title="Javier Carazo">Javier Carazo</a> and <a href="https://twitter.com/ahornero" target="_blank" title="Alberto Hornero">Alberto Hornero</a>  from <a href="http://codection.com">Codection</a>, developers of this plugin.</p>
-		        <p>We have been spending many hours to develop this plugin. <br>If you like and use this plugin, you can <strong>buy us a cup of coffee</strong>.</p>
-		        <form action="https://www.paypal.com/cgi-bin/webscr" method="post" target="_top">
-					<input type="hidden" name="cmd" value="_s-xclick">
-					<input type="hidden" name="hosted_button_id" value="QPYVWKJG4HDGG">
-					<input type="image" src="https://www.paypalobjects.com/en_GB/i/btn/btn_donate_LG.gif" border="0" name="submit" alt="PayPal – The safer, easier way to pay online.">
-					<img alt="" border="0" src="https://www.paypalobjects.com/es_ES/i/scr/pixel.gif" width="1" height="1">
-				</form>
-		        <div style="clear:both;"></div>
-		    </div>
-		</div>
 
 		<?php if( $old_csv_files->found_posts > 0 ): ?>
 		<div class="postbox">
@@ -554,7 +582,16 @@ function acui_options()
 				</tr>
 				<tr class="form-field form-required">
 					<th scope="row"><label>CSV file <span class="description">(required)</span></label></th>
-					<td><input type="file" name="uploadfiles[]" id="uploadfiles" size="35" class="uploadfiles" /></td>
+					<td>
+						<div id="upload_file">
+							<input type="file" name="uploadfiles[]" id="uploadfiles" size="35" class="uploadfiles" />
+							<em>or you can choose directly a file from your host, <a href="#" class="toggle_upload_path">click here</a>.</em>
+						</div>
+						<div id="introduce_path" style="display:none;">
+							<input placeholder="You have to introduce the path to file, i.e.: <?php $upload_dir = wp_upload_dir(); echo $upload_dir["path"]; ?>/test.csv" type="text" name="path_to_file" id="path_to_file" value="<?php echo dirname( __FILE__ ); ?>/test.csv" style="width:70%;" />
+							<em>or you can upload it directly from your PC, <a href="#" class="toggle_upload_path">click here</a>.</em>
+						</div>
+					</td>
 				</tr>
 				<tr class="form-field form-required">
 					<th scope="row"><label>What should do the plugin with empty cells?</label></th>
@@ -615,13 +652,87 @@ function acui_options()
 			</form>
 		</div>
 
-		<div style="clear:both; width:100%;"></div>
+	</div>
+	<script type="text/javascript">
+	function check(){
+		if(document.getElementById("uploadfiles").value == "" && jQuery( "#upload_file" ).is(":visible") ) {
+		   alert("Please choose a file");
+		   return false;
+		}
 
-		<?php 
-		$headers = get_option("acui_columns"); 
+		if( jQuery( "#path_to_file" ).val() == "" && jQuery( "#introduce_path" ).is(":visible") ) {
+		   alert("Please enter a path to the file");
+		   return false;
+		}		
+	}
 
-		if(is_array($headers) && !empty($headers)):
-		?>
+	function showMe (box) {
+	    var chboxs = document.getElementsByName("sends_email");
+	    var vis = "none";
+	    for(var i=0;i<chboxs.length;i++) { 
+	        if(chboxs[i].checked){
+	         vis = "block";
+	            break;
+	        }
+	    }
+	    document.getElementById(box).style.display = vis;
+	}
+
+	jQuery( document ).ready( function( $ ){
+		$( ".delete_attachment" ).click( function(){
+			var answer = confirm( "Are you sure to delete this file?" );
+			if( answer ){
+				var data = {
+					'action': 'acui_delete_attachment',
+					'attach_id': $( this ).attr( "attach_id" )
+				};
+
+				$.post(ajaxurl, data, function(response) {
+					if( response != 1 )
+						alert( "There were problems deleting the file, please check file permissions" );
+					else{
+						alert( "File successfully deleted" );
+						document.location.reload();
+					}
+				});
+			}
+		});
+
+		$( "#bulk_delete_attachment" ).click( function(){
+			var answer = confirm( "Are you sure to delete ALL CSV files uploaded? There can be CSV files from other plugins." );
+			if( answer ){
+				var data = {
+					'action': 'acui_bulk_delete_attachment',
+				};
+
+				$.post(ajaxurl, data, function(response) {
+					if( response != 1 )
+						alert( "There were problems deleting the files, please check files permissions" );
+					else{
+						alert( "Files successfully deleted" );
+						document.location.reload();
+					}
+				});
+			}
+		});
+
+		$( ".toggle_upload_path" ).click( function( e ){
+			e.preventDefault();
+
+			$("#upload_file,#introduce_path").toggle();
+		} );
+
+	} );
+	</script>
+
+	<?php 
+
+	break;
+
+	case 'columns':
+
+	$headers = get_option("acui_columns"); 
+	?>
 
 		<h3>Custom columns loaded</h3>
 		<table class="form-table">
@@ -630,17 +741,29 @@ function acui_options()
 				<th scope="row">Columns loaded in previous files</th>
 				<td><small><em>(if you load another CSV with different columns, the new ones will replace this list)</em></small>
 					<ol>
-						<?php foreach ($headers as $column): ?>
+						<?php 
+						if( is_array( $headers ) && count( $headers ) > 0 ):
+							foreach ($headers as $column): ?>
 							<li><?php echo $column; ?></li>
-						<?php endforeach; ?>						
+						<?php endforeach;  ?>
+						
+						<?php else: ?>
+							<li>There is no columns loaded yet</li>							
+						<?php endif; ?>
 					</ol>
 				</td>
 			</tr>
 		</tbody></table>
 
-		<?php endif; ?>
+		<?php 
 
-		<h3>Doc</h3>
+		break;
+
+		case 'doc':
+
+		?>
+
+		<h3>Documentation</h3>
 		<table class="form-table">
 		<tbody>
 			<tr valign="top">
@@ -698,70 +821,115 @@ function acui_options()
 				<th scope="row">Example</th>
 			<td>Download this <a href="<?php echo plugins_url() . "/import-users-from-csv-with-meta/test.csv"; ?>">.csv file</a> to test</td> 
 			</tr>
-		</tbody></table>
+		</tbody>
+		</table>
 		<br/>
 		<div style="width:775px;margin:0 auto"><img src="<?php echo plugins_url() . "/import-users-from-csv-with-meta/csv_example.png"; ?>"/></div>
+	<?php break; ?>
+
+	<?php case 'cron':
+
+	$cron_activated = get_option( "acui_cron_activated");
+	$path_to_file = get_option( "acui_cron_path_to_file");
+	$period = get_option( "acui_cron_period");
+	$role = get_option( "acui_cron_role");
+	$log = get_option( "acui_cron_log");
+
+	if( empty( $cron_activated ) )
+		$cron_activated = false;
+
+	if( empty( $path_to_file ) )
+		$path_to_file = dirname( __FILE__ ) . '/test.csv';
+
+	if( empty( $period ) )
+		$period = 'hourly';
+
+	if( empty( $role ) )
+		$role = "subscriber";
+
+	if( empty( $log ) )
+		$log = "No tasks done yet.";
+
+	?>
+		<h3>Execute an import of users periodically</h3>
+
+		<form method="POST" enctype="multipart/form-data" action="" accept-charset="utf-8">
+			<table class="form-table">
+				<tbody>
+				<tr class="form-field">
+					<th scope="row"><label for="path_to_file">Path of file that are going to be imported</label></th>
+					<td>
+						<input placeholder="Insert complete path to the file" type="text" name="path_to_file" id="path_to_file" value="<?php echo dirname( __FILE__ ); ?>/test.csv" style="width:70%;" />
+						<p class="description">You have to introduce the path to file, i.e.: <?php $upload_dir = wp_upload_dir(); echo $upload_dir["path"]; ?>/test.csv</p>
+					</td>
+				</tr>
+				<tr class="form-field form-required">
+					<th scope="row"><label for="period">Period</label></th>
+					<td>
+						<select id="period" name="period">
+							<option <?php if( $period == 'hourly' ) echo "selected='selected'"; ?> value="hourly">Hourly</option>
+							<option <?php if( $period == 'twicedaily' ) echo "selected='selected'"; ?> value="twicedaily">Twicedaily</option>
+							<option <?php if( $period == 'daily' ) echo "selected='selected'"; ?> value="daily">Daily</option>
+						</select>
+						<p class="description">How often the event should reoccur?</p>
+					</td>
+				</tr>
+				<tr class="form-field form-required">
+					<th scope="row"><label for="cron-activated">Activate periodical import?</label></th>
+					<td>
+						<input type="checkbox" name="cron-activated" value="yes" <?php if( $cron_activated == true ) echo "checked='checked'"; ?>/>
+					</td>
+				</tr>
+				<tr class="form-field form-required">
+					<th scope="row"><label for="role">Role</label></th>
+					<td>
+						<select id="role" name="role">
+							<?php 
+								$list_roles = acui_get_editable_roles(); 
+								
+								foreach ($list_roles as $key => $value) {
+									if($key == $role)
+										echo "<option selected='selected' value='$key'>$value</option>";
+									else
+										echo "<option value='$key'>$value</option>";
+								}
+							?>
+						</select>
+						<p class="description">Which role would be used to import users?</p>
+					</td>
+				</tr>
+				<tr class="form-field form-required">
+					<th scope="row"><label for="log">Last actions of schedule task</label></th>
+					<td>
+						<pre><?php echo $log; ?></pre>
+					</td>
+				</tr>
+				</tbody>
+			</table>
+			<input class="button-primary" type="submit" value="Save schedule options"/>
+		</form>
+	<?php break; ?>
+
+	<?php case 'donate': ?>
+
+	<div class="postbox">
+	    <h3 class="hndle"><span>&nbsp;Do you like it?</span></h3>
+
+	    <div class="inside" style="display: block;">
+	        <img src="<?php echo $url_plugin; ?>icon_coffee.png" alt="buy me a coffee" style=" margin: 5px; float:left;">
+	        <p>Hi! we are <a href="https://twitter.com/fjcarazo" target="_blank" title="Javier Carazo">Javier Carazo</a> and <a href="https://twitter.com/ahornero" target="_blank" title="Alberto Hornero">Alberto Hornero</a>  from <a href="http://codection.com">Codection</a>, developers of this plugin.</p>
+	        <p>We have been spending many hours to develop this plugin. <br>If you like and use this plugin, you can <strong>buy us a cup of coffee</strong>.</p>
+	        <form action="https://www.paypal.com/cgi-bin/webscr" method="post" target="_top">
+				<input type="hidden" name="cmd" value="_s-xclick">
+				<input type="hidden" name="hosted_button_id" value="QPYVWKJG4HDGG">
+				<input type="image" src="https://www.paypalobjects.com/en_GB/i/btn/btn_donate_LG.gif" border="0" name="submit" alt="PayPal – The safer, easier way to pay online.">
+				<img alt="" border="0" src="https://www.paypalobjects.com/es_ES/i/scr/pixel.gif" width="1" height="1">
+			</form>
+	        <div style="clear:both;"></div>
+	    </div>
 	</div>
-	<script type="text/javascript">
-	function check(){
-		if(document.getElementById("uploadfiles").value == "") {
-		   alert("Please choose a file");
-		   return false;
-		}
-	}
 
-	function showMe (box) {
-	    var chboxs = document.getElementsByName("sends_email");
-	    var vis = "none";
-	    for(var i=0;i<chboxs.length;i++) { 
-	        if(chboxs[i].checked){
-	         vis = "block";
-	            break;
-	        }
-	    }
-	    document.getElementById(box).style.display = vis;
-	}
-
-	jQuery( document ).ready( function( $ ){
-		$( ".delete_attachment" ).click( function(){
-			var answer = confirm( "Are you sure to delete this file?" );
-			if( answer ){
-				var data = {
-					'action': 'acui_delete_attachment',
-					'attach_id': $( this ).attr( "attach_id" )
-				};
-
-				$.post(ajaxurl, data, function(response) {
-					if( response != 1 )
-						alert( "There were problems deleting the file, please check file permissions" );
-					else{
-						alert( "File successfully deleted" );
-						document.location.reload();
-					}
-				});
-			}
-		});
-
-		$( "#bulk_delete_attachment" ).click( function(){
-			var answer = confirm( "Are you sure to delete ALL CSV files uploaded? There can be CSV files from other plugins." );
-			if( answer ){
-				var data = {
-					'action': 'acui_bulk_delete_attachment',
-				};
-
-				$.post(ajaxurl, data, function(response) {
-					if( response != 1 )
-						alert( "There were problems deleting the files, please check files permissions" );
-					else{
-						alert( "Files successfully deleted" );
-						document.location.reload();
-					}
-				});
-			}
-		});
-
-	} );
-	</script>
+	<?php break; ?>
 <?php
 	}
 }
@@ -775,75 +943,131 @@ function acui_options()
  * @return none
  */
 function acui_fileupload_process( $form_data ) {
+  $path_to_file = $form_data["path_to_file"];
+  $role = $form_data["role"];
   $uploadfiles = $_FILES['uploadfiles'];
-  $role = $form_data["role"]; 
-  
-  if ( is_array($uploadfiles) ) {
 
-	foreach ( $uploadfiles['name'] as $key => $value ) {
+  if( empty( $uploadfiles["name"][0] ) ):
+  	
+  	  if( !file_exists ( $path_to_file ) )
+  			wp_die( "Error, we cannot find the file: $path_to_file" ); 
 
-	  // look only for uploded files
-	  if ($uploadfiles['error'][$key] == 0) {
-		$filetmp = $uploadfiles['tmp_name'][$key];
+  	acui_import_users( $path_to_file, $form_data );
 
-		//clean filename and extract extension
-		$filename = $uploadfiles['name'][$key];
+  else:
+  	 
+	  if ( is_array($uploadfiles) ) {
 
-		// get file info
-		// @fixme: wp checks the file extension....
-		$filetype = wp_check_filetype( basename( $filename ), array('csv' => 'text/csv') );
-		$filetitle = preg_replace('/\.[^.]+$/', '', basename( $filename ) );
-		$filename = $filetitle . '.' . $filetype['ext'];
-		$upload_dir = wp_upload_dir();
-		
-		if ($filetype['ext'] != "csv") {
-		  wp_die('File must be a CSV');
-		  return;
+		foreach ( $uploadfiles['name'] as $key => $value ) {
+
+		  // look only for uploded files
+		  if ($uploadfiles['error'][$key] == 0) {
+			$filetmp = $uploadfiles['tmp_name'][$key];
+
+			//clean filename and extract extension
+			$filename = $uploadfiles['name'][$key];
+
+			// get file info
+			// @fixme: wp checks the file extension....
+			$filetype = wp_check_filetype( basename( $filename ), array('csv' => 'text/csv') );
+			$filetitle = preg_replace('/\.[^.]+$/', '', basename( $filename ) );
+			$filename = $filetitle . '.' . $filetype['ext'];
+			$upload_dir = wp_upload_dir();
+			
+			if ($filetype['ext'] != "csv") {
+			  wp_die('File must be a CSV');
+			  return;
+			}
+
+			/**
+			 * Check if the filename already exist in the directory and rename the
+			 * file if necessary
+			 */
+			$i = 0;
+			while ( file_exists( $upload_dir['path'] .'/' . $filename ) ) {
+			  $filename = $filetitle . '_' . $i . '.' . $filetype['ext'];
+			  $i++;
+			}
+			$filedest = $upload_dir['path'] . '/' . $filename;
+
+			/**
+			 * Check write permissions
+			 */
+			if ( !is_writeable( $upload_dir['path'] ) ) {
+			  wp_die('Unable to write to directory. Is this directory writable by the server?');
+			  return;
+			}
+
+			/**
+			 * Save temporary file to uploads dir
+			 */
+			if ( !@move_uploaded_file($filetmp, $filedest) ){
+			  wp_die("Error, the file $filetmp could not moved to : $filedest ");
+			  continue;
+			}
+
+			$attachment = array(
+			  'post_mime_type' => $filetype['type'],
+			  'post_title' => $filetitle,
+			  'post_content' => '',
+			  'post_status' => 'inherit'
+			);
+
+			$attach_id = wp_insert_attachment( $attachment, $filedest );
+			require_once( ABSPATH . "wp-admin" . '/includes/image.php' );
+			$attach_data = wp_generate_attachment_metadata( $attach_id, $filedest );
+			wp_update_attachment_metadata( $attach_id,  $attach_data );
+			
+			acui_import_users($filedest, $form_data, $attach_id);
+		  }
 		}
-
-		/**
-		 * Check if the filename already exist in the directory and rename the
-		 * file if necessary
-		 */
-		$i = 0;
-		while ( file_exists( $upload_dir['path'] .'/' . $filename ) ) {
-		  $filename = $filetitle . '_' . $i . '.' . $filetype['ext'];
-		  $i++;
-		}
-		$filedest = $upload_dir['path'] . '/' . $filename;
-
-		/**
-		 * Check write permissions
-		 */
-		if ( !is_writeable( $upload_dir['path'] ) ) {
-		  wp_die('Unable to write to directory. Is this directory writable by the server?');
-		  return;
-		}
-
-		/**
-		 * Save temporary file to uploads dir
-		 */
-		if ( !@move_uploaded_file($filetmp, $filedest) ){
-		  wp_die("Error, the file $filetmp could not moved to : $filedest ");
-		  continue;
-		}
-
-		$attachment = array(
-		  'post_mime_type' => $filetype['type'],
-		  'post_title' => $filetitle,
-		  'post_content' => '',
-		  'post_status' => 'inherit'
-		);
-
-		$attach_id = wp_insert_attachment( $attachment, $filedest );
-		require_once( ABSPATH . "wp-admin" . '/includes/image.php' );
-		$attach_data = wp_generate_attachment_metadata( $attach_id, $filedest );
-		wp_update_attachment_metadata( $attach_id,  $attach_data );
-		
-		acui_import_users($filedest, $form_data, $attach_id);
 	  }
+  endif;
+}
+
+function acui_manage_cron_process( $form_data ){
+	$next_timestamp = wp_next_scheduled( 'acui_cron_process' );
+
+	if( isset( $form_data["cron-activated"] ) && $form_data["cron-activated"] == "yes" ){
+		update_option( "acui_cron_activated", true );
+
+			if( !$next_timestamp ) {
+				wp_schedule_event( time(), $form_data[ "period" ], 'acui_cron_process' );
+			}
 	}
-  }
+	else{
+		update_option( "acui_cron_activated", false );
+		wp_unschedule_event( $next_timestamp, 'acui_cron_process');		
+	}
+
+	update_option( "acui_cron_path_to_file", $form_data["path_to_file"] );
+	update_option( "acui_cron_period", $form_data["period"] );
+	update_option( "acui_cron_role", $form_data["role"] );
+
+	?>
+
+	<div class="updated">
+       <p>Settings updated correctly</p>
+    </div>
+    <?php
+}
+
+function acui_cron_process(){
+	$message = "Import cron task starts at " . date("Y-m-d H:i:s") . "<br/>";
+
+	$form_data = array();
+	$form_data[ "path_to_file" ] = get_option( "acui_cron_path_to_file");
+	$form_data[ "role" ] = get_option( "acui_cron_role");
+	$form_data[ "empty_cell_action" ] = "leave";
+
+	ob_start();
+	acui_fileupload_process( $form_data );
+	$message .= "<br/>" . ob_get_contents() . "<br/>";
+	ob_end_clean();	
+
+	$message .= "--Finished at " . date("Y-m-d H:i:s") . "<br/><br/>";	
+
+	update_option( "acui_cron_log", $message );
 }
 
 function acui_extra_user_profile_fields( $user ) {
@@ -982,18 +1206,19 @@ function acui_bulk_delete_attachment(){
 	wp_die();
 }
 	
-register_activation_hook(__FILE__,'acui_init'); 
+register_activation_hook( __FILE__,'acui_init' ); 
 register_deactivation_hook( __FILE__, 'acui_deactivate' );
-add_action("plugins_loaded", "acui_init");
-add_action("admin_menu", "acui_menu");
-add_filter('plugin_row_meta', 'acui_plugin_row_meta', 10, 2);
-add_action('admin_init', 'acui_modify_user_edit_admin' );
-add_action("show_user_profile", "acui_extra_user_profile_fields");
-add_action("edit_user_profile", "acui_extra_user_profile_fields");
-add_action("personal_options_update", "acui_save_extra_user_profile_fields");
-add_action("edit_user_profile_update", "acui_save_extra_user_profile_fields");
+add_action( "plugins_loaded", "acui_init" );
+add_action( "admin_menu", "acui_menu" );
+add_filter( 'plugin_row_meta', 'acui_plugin_row_meta', 10, 2 );
+add_action( 'admin_init', 'acui_modify_user_edit_admin' );
+add_action( "show_user_profile", "acui_extra_user_profile_fields" );
+add_action( "edit_user_profile", "acui_extra_user_profile_fields" );
+add_action( "personal_options_update", "acui_save_extra_user_profile_fields" );
+add_action( "edit_user_profile_update", "acui_save_extra_user_profile_fields" );
 add_action( 'wp_ajax_acui_delete_attachment', 'acui_delete_attachment' );
 add_action( 'wp_ajax_acui_bulk_delete_attachment', 'acui_bulk_delete_attachment' );
+add_action( 'acui_cron_process', 'acui_cron_process' );
 
 // misc
 if (!function_exists('str_getcsv')) { 
